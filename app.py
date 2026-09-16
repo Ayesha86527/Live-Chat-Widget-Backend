@@ -2,42 +2,49 @@
 import logging
 import os
 from datetime import datetime
-from typing import List, Optional
+from typing import Generator, List
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 import models
 from database import Base, SessionLocal, engine
 
 
-# --------------------------------------------------
-# Configuration
-# --------------------------------------------------
+# ==================================================
+# CONFIGURATION
+# ==================================================
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
-    raise RuntimeError("GROQ_API_KEY is not set in the environment.")
+    raise RuntimeError(
+        "GROQ_API_KEY is not set. Please add it to your .env file."
+    )
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 
-# --------------------------------------------------
-# FastAPI Application
-# --------------------------------------------------
+# ==================================================
+# FASTAPI APPLICATION
+# ==================================================
 
 app = FastAPI(
     title="Revotic AI Chatbot API",
+    description="AI chatbot API for Revotic AI",
     version="1.0.0",
 )
 
@@ -51,16 +58,22 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------
-# Database Setup
-# --------------------------------------------------
+# ==================================================
+# DATABASE SETUP
+# ==================================================
 
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created successfully.")
+
+except Exception:
+    logger.exception("Failed to create database tables.")
+    raise
 
 
-# --------------------------------------------------
-# System Prompt
-# --------------------------------------------------
+# ==================================================
+# SYSTEM PROMPT
+# ==================================================
 
 SYSTEM_PROMPT = """
 You are a helpful assistant who works for Revotic AI.
@@ -68,11 +81,9 @@ You are a helpful assistant who works for Revotic AI.
 Your job is to answer user queries concisely related to Revotic AI
 in a polite and professional tone.
 
-Revotic AI is a software company that builds:
-- Intelligent automation tools
-- Custom AI/ML solutions
-- Generative AI solutions
-- Web and app development solutions
+Revotic AI is a software company that builds intelligent
+automation tools, custom AI/ML solutions, generative AI solutions,
+and next-level web and app development.
 
 Their mission is to help startups, enterprises, and businesses
 unlock their true potential with future-ready technology.
@@ -87,7 +98,7 @@ Core services offered by Revotic AI:
 Revotic AI has worked with brands like Huda Beauty, TOMS,
 Lush, and many others.
 
-Their website is:
+Website:
 https://revoticai.com/
 
 Email:
@@ -96,59 +107,73 @@ contact@revoticai.com
 Contact page:
 https://revoticai.com/contact/
 
-You should only respond to queries regarding Revotic AI.
+Only respond to queries regarding Revotic AI.
 
 For irrelevant queries, respond exactly:
+
 "I am sorry but I cannot help you with that, however,
 I will be happy to answer any query regarding Revotic AI."
 """
 
 
-# --------------------------------------------------
-# Chat Completion Function
-# --------------------------------------------------
+# ==================================================
+# CHAT COMPLETION
+# ==================================================
 
 def chat_completion(user_query: str) -> str:
     """
     Send a user query to Groq and return the AI response.
     """
 
-    completion = groq_client.chat.completions.create(
-        model="openai/gpt-oss-20b",
-        messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": user_query,
-            },
-        ],
-        temperature=1,
-        max_completion_tokens=2000,
-        top_p=1,
-        reasoning_effort="low",
-        stream=False,
-    )
+    try:
+        completion = groq_client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": user_query,
+                },
+            ],
+            temperature=1,
+            max_completion_tokens=2000,
+            top_p=1,
+            reasoning_effort="low",
+            stream=False,
+        )
 
-    response = completion.choices[0].message.content
+        if not completion.choices:
+            raise RuntimeError(
+                "The AI returned no completion choices."
+            )
 
-    if not response:
-        raise RuntimeError("The AI returned an empty response.")
+        response = completion.choices[0].message.content
 
-    return response
+        if not response or not response.strip():
+            raise RuntimeError(
+                "The AI returned an empty response."
+            )
+
+        return response.strip()
+
+    except Exception:
+        logger.exception("Groq API request failed.")
+        raise
 
 
-# --------------------------------------------------
-# Pydantic Schemas
-# --------------------------------------------------
+# ==================================================
+# PYDANTIC SCHEMAS
+# ==================================================
 
 class QueryRequest(BaseModel):
     query: str = Field(
         ...,
         min_length=1,
         max_length=1000,
+        description="User's question",
     )
 
 
@@ -170,37 +195,53 @@ class ChatHistoryResponse(ChatHistoryBase):
     id: int
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ChatHistoryQuery(BaseModel):
-    limit: Optional[int] = Field(default=50, ge=1, le=100)
-    offset: Optional[int] = Field(default=0, ge=0)
+    limit: int = Field(
+        default=50,
+        ge=1,
+        le=100,
+    )
+
+    offset: int = Field(
+        default=0,
+        ge=0,
+    )
 
 
-# --------------------------------------------------
-# Database Dependency
-# --------------------------------------------------
+# ==================================================
+# DATABASE DEPENDENCY
+# ==================================================
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
+    """
+    Create and provide a database session.
+    """
+
     db = SessionLocal()
 
     try:
         yield db
+
     finally:
         db.close()
 
 
-# --------------------------------------------------
-# Save Chat to Database
-# --------------------------------------------------
+# ==================================================
+# SAVE CHAT TO DATABASE
+# ==================================================
 
 def save_chat_to_db(
     db: Session,
     user_message: str,
     ai_response: str,
-):
+) -> models.ChatHistory:
+    """
+    Save a chat message and AI response to the database.
+    """
+
     try:
         chat_entry = models.ChatHistory(
             message=user_message,
@@ -221,14 +262,16 @@ def save_chat_to_db(
     except Exception:
         db.rollback()
 
-        logger.exception("Error saving chat to database")
+        logger.exception(
+            "Error saving chat to database."
+        )
 
         raise
 
 
-# --------------------------------------------------
-# Health Check Endpoint
-# --------------------------------------------------
+# ==================================================
+# ROOT ENDPOINT
+# ==================================================
 
 @app.get("/")
 def root():
@@ -238,6 +281,10 @@ def root():
     }
 
 
+# ==================================================
+# HEALTH CHECK
+# ==================================================
+
 @app.get("/health")
 def health_check():
     return {
@@ -245,15 +292,23 @@ def health_check():
     }
 
 
-# --------------------------------------------------
-# Chatbot Endpoint
-# --------------------------------------------------
+# ==================================================
+# CHATBOT ENDPOINT
+# ==================================================
 
-@app.post("/ask", response_model=QueryResponse)
+@app.post(
+    "/ask",
+    response_model=QueryResponse,
+)
 def ask_endpoint(
     request: QueryRequest,
     db: Session = Depends(get_db),
 ):
+    """
+    Receive a user query, generate an AI response,
+    and save the conversation to the database.
+    """
+
     user_query = request.query.strip()
 
     if not user_query:
@@ -268,17 +323,19 @@ def ask_endpoint(
             len(user_query),
         )
 
-        # Get AI response
+        # Generate AI response
         ai_response = chat_completion(user_query)
 
-        # Save conversation to database
+        # Save conversation
         save_chat_to_db(
             db=db,
             user_message=user_query,
             ai_response=ai_response,
         )
 
-        logger.info("Query processed successfully")
+        logger.info(
+            "Query processed and saved successfully."
+        )
 
         return QueryResponse(
             response=ai_response,
@@ -289,7 +346,9 @@ def ask_endpoint(
         raise
 
     except Exception:
-        logger.exception("Error processing chat request")
+        logger.exception(
+            "Error processing chat request."
+        )
 
         raise HTTPException(
             status_code=500,
@@ -297,40 +356,41 @@ def ask_endpoint(
         )
 
 
-# --------------------------------------------------
-# Chat History Endpoint
-# --------------------------------------------------
+# ==================================================
+# CHAT HISTORY ENDPOINT
+# ==================================================
 
 @app.get(
     "/chat/history",
     response_model=List[ChatHistoryResponse],
 )
 def get_chat_history(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=100,
+        description="Number of chats to return",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="Number of chats to skip",
+    ),
     db: Session = Depends(get_db),
 ):
     """
     Get chat history with pagination.
+
+    Returns newest chats first.
     """
 
-    if limit < 1 or limit > 100:
-        raise HTTPException(
-            status_code=400,
-            detail="Limit must be between 1 and 100.",
-        )
-
-    if offset < 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Offset cannot be negative.",
-        )
-
     try:
-
         chats = (
             db.query(models.ChatHistory)
-            .order_by(models.ChatHistory.timestamp.asc())
+            .order_by(
+                models.ChatHistory.timestamp.desc(),
+                models.ChatHistory.id.desc(),
+            )
             .offset(offset)
             .limit(limit)
             .all()
@@ -339,7 +399,9 @@ def get_chat_history(
         return chats
 
     except Exception:
-        logger.exception("Error fetching chat history")
+        logger.exception(
+            "Error fetching chat history."
+        )
 
         raise HTTPException(
             status_code=500,
