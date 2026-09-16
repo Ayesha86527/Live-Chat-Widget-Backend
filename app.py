@@ -364,46 +364,46 @@ def ask_endpoint(
     "/chat/history",
     response_model=List[ChatHistoryResponse],
 )
-def get_chat_history(
-    limit: int = Query(
-        default=50,
-        ge=1,
-        le=100,
-        description="Number of chats to return",
-    ),
-    offset: int = Query(
-        default=0,
-        ge=0,
-        description="Number of chats to skip",
-    ),
-    db: Session = Depends(get_db),
-):
+def chat_completion(user_query: str) -> str:
     """
-    Get chat history with pagination.
-
-    Returns newest chats first.
+    Send a user query to Groq and return the AI response.
     """
 
     try:
-        chats = (
-            db.query(models.ChatHistory)
-            .order_by(
-                models.ChatHistory.timestamp.desc(),
-                models.ChatHistory.id.desc(),
-            )
-            .offset(offset)
-            .limit(limit)
-            .all()
+        completion = groq_client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": user_query,
+                },
+            ],
+            temperature=1,
+            max_completion_tokens=2000,
+            top_p=1,
+            reasoning_effort="low",
+            stream=False,
         )
 
-        return chats
+        if not completion.choices:
+            raise RuntimeError(
+                "The AI returned no completion choices."
+            )
+
+        response = completion.choices[0].message.content
+
+        if not response or not response.strip():
+            raise RuntimeError(
+                "The AI returned an empty response."
+            )
+
+        response = response.strip()
+        return response[:-1]
 
     except Exception:
-        logger.exception(
-            "Error fetching chat history."
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="An error occurred while fetching chat history.",
-        )
+        logger.exception("Groq API request failed.")
+        raise
