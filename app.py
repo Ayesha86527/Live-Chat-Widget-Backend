@@ -117,7 +117,7 @@ def get_db():
     finally:
         db.close()
 
-""" Save Messages into the Database
+# Save Messages into the Database
 def save_chat_to_db(db: Session, user_message: str, ai_response: str):
     try:
         chat_entry = models.ChatHistory(
@@ -129,26 +129,6 @@ def save_chat_to_db(db: Session, user_message: str, ai_response: str):
         db.refresh(chat_entry)
         logger.info(f"Chat saved to database with ID: {chat_entry.id}")
         return chat_entry
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error saving chat to database: {str(e)}")
-        raise e"""
-
-# Save Messages into the Database
-def save_chat_to_db(db: Session, user_message: str, ai_response: str):
-    try:
-        chat_entry = models.ChatHistory(
-            message=ai_response,   # BUG: Should be user_message
-            response=user_message  # BUG: Should be ai_response
-        )
-
-        db.add(chat_entry)
-        db.commit()
-        db.refresh(chat_entry)
-
-        logger.info(f"Chat saved to database with ID: {chat_entry.id}")
-        return chat_entry
-
     except Exception as e:
         db.rollback()
         logger.error(f"Error saving chat to database: {str(e)}")
