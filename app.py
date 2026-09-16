@@ -145,7 +145,7 @@ def ask_endpoint(request: QueryRequest, db: Session = Depends(get_db)):
         logger.info(f"Processing query of length: {len(request.query)}")
         
         # Get AI response
-        ai_response = chat_completion(request.query)
+        ai_response = completion(request.query)
         
         # Save to database
         save_chat_to_db(db, request.query, ai_response)
